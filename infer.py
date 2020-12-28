@@ -43,17 +43,16 @@ def main():
     net = BDRAR().cuda()
 
     if len(args.snapshot) > 0:
-        print 'load snapshot \'%s\' for testing' % args.snapshot
+        print('load snapshot \'%s\' for testing' % args.snapshot)
         net.load_state_dict(torch.load(os.path.join(args.rootpath, args.snapshot)))
 
     net.eval()
     with torch.no_grad():
-        for name, root in to_test.iteritems():
+        for name, root in to_test.items():
             img_list = [img_name for img_name in os.listdir(root) if
                         img_name.endswith('.jpg')]
-            img_list.sort(key=lambda f: int(''.join(filter(str.isdigit, f))))
             for idx, img_name in enumerate(img_list):
-                print 'predicting for %s: %d / %d' % (name, idx + 1, len(img_list))
+                print('predicting for %s: %d / %d' % (name, idx + 1, len(img_list)))
                 check_mkdir(
                     os.path.join(args.rootpath, args.expname, args.pathOut))
                 img = Image.open(os.path.join(root, img_name))

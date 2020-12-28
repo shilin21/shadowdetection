@@ -20,15 +20,15 @@ from model import BDRAR
 
 cudnn.benchmark = True
 
-device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:5" if torch.cuda.is_available() else "cpu")
 
 ckpt_path = './ckpt'
 exp_name = 'BDRAR'
 
 # batch size of 8 with resolution of 416*416 is exactly OK for the GTX 1080Ti GPU
 args = {
-    'iter_num': 5000,
-    'train_batch_size': 4,
+    'iter_num': 4000,
+    'train_batch_size': 8,
     'last_iter': 0,
     'lr': 5e-3,
     'lr_decay': 0.9,
@@ -60,7 +60,7 @@ log_path = os.path.join(ckpt_path, exp_name, str(datetime.datetime.now()) + '.tx
 
 con_path = '/nfs/bigfovea/add_disk0/shilinhu/shadow_video/train'
 con_batch = 4
-alpha = 1
+alpha = 2
 con_transform = transforms.Compose([
     transforms.Resize((args['scale'], args['scale'])),
     transforms.ToTensor(),
@@ -111,8 +111,8 @@ def train(net, optimizer):
             v_path = os.path.join(con_path, random.choice(videos))
             con_imgs = [i for i in os.listdir(v_path) if i.endswith('.jpg')]
             con_imgs.sort(key=lambda f: int(''.join(filter(str.isdigit, f))))
-            i_list1 = [random.randrange(len(con_imgs)-2) for _ in range(con_batch)]
-            i_list2 = [i+2 for i in i_list1]
+            i_list1 = [random.randrange(len(con_imgs)-1) for _ in range(con_batch)]
+            i_list2 = [i+1 for i in i_list1]
             i_path1 = [os.path.join(v_path, con_imgs[i]) for i in i_list1]
             i_path2 = [os.path.join(v_path, con_imgs[i]) for i in i_list2]
             c_inputs1 = [con_transform(Image.open(i).convert('RGB')) for i in i_path1]
@@ -185,13 +185,14 @@ def train(net, optimizer):
                    loss2_h2l_record.avg, loss3_h2l_record.avg, loss4_h2l_record.avg, 
                    loss1_l2h_record.avg, loss2_l2h_record.avg, loss3_l2h_record.avg, 
                    loss4_l2h_record.avg, optimizer.param_groups[1]['lr'], loss_con_record.avg)
-            print log
+            print(log)
             open(log_path, 'a').write(log + '\n')
 
-            if curr_iter >= args['iter_num']:
+            if curr_iter > 1500 and curr_iter % 500 == 0:
                 torch.save(net.state_dict(), 
-                           os.path.join(ckpt_path, exp_name, 'baseline2_alpha%d_%d.pth' % (alpha, curr_iter)))
-                return
+                           os.path.join(ckpt_path, exp_name, 'baseline1_alpha%d_%d.pth' % (alpha, curr_iter)))
+                if curr_iter >= args['iter_num']:
+                    return
 
 
 if __name__ == '__main__':

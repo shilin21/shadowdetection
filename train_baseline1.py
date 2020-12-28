@@ -20,15 +20,15 @@ from model import BDRAR
 
 cudnn.benchmark = True
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
 ckpt_path = './ckpt'
 exp_name = 'BDRAR'
 
 # batch size of 8 with resolution of 416*416 is exactly OK for the GTX 1080Ti GPU
 args = {
-    'iter_num': 5000,
-    'train_batch_size': 4,
+    'iter_num': 4000,
+    'train_batch_size': 8,
     'last_iter': 0,
     'lr': 5e-3,
     'lr_decay': 0.9,
@@ -60,7 +60,7 @@ log_path = os.path.join(ckpt_path, exp_name, str(datetime.datetime.now()) + '.tx
 
 con_path = '/nfs/bigfovea/add_disk0/shilinhu/shadow_video/train'
 con_batch = 4
-alpha = 2
+alpha = 1
 con_transform = transforms.Compose([
     transforms.Resize((args['scale'], args['scale'])),
     transforms.ToTensor(),
@@ -185,13 +185,14 @@ def train(net, optimizer):
                    loss2_h2l_record.avg, loss3_h2l_record.avg, loss4_h2l_record.avg, 
                    loss1_l2h_record.avg, loss2_l2h_record.avg, loss3_l2h_record.avg, 
                    loss4_l2h_record.avg, optimizer.param_groups[1]['lr'], loss_con_record.avg)
-            print log
+            print(log)
             open(log_path, 'a').write(log + '\n')
 
-            if curr_iter >= args['iter_num']:
+            if curr_iter > 1500 and curr_iter % 500 == 0:
                 torch.save(net.state_dict(), 
                            os.path.join(ckpt_path, exp_name, 'baseline1_alpha%d_%d.pth' % (alpha, curr_iter)))
-                return
+                if curr_iter >= args['iter_num']:
+                    return
 
 
 if __name__ == '__main__':

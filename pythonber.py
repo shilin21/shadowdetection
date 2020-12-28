@@ -25,7 +25,7 @@ def get_imlist(dir):
 
 def computeBER_mth(GT,Pred,mth):
     print(Pred)
-    print mth
+    #print(mth)
     GTimlist = get_imlist(GT)
     nim = len(GTimlist)
     nth = len(mth)
@@ -39,8 +39,8 @@ def computeBER_mth(GT,Pred,mth):
         countNeg = np.sum(negPoints.astype('uint8'))
         sz = GTim.shape
         GTim = GTim>0.5
-        Predim = np.asarray(Image.open(os.path.join(Pred,im)).convert('L').resize((sz[1],sz[0]),Image.NEAREST))
-        Predim.setflags(write=1)
+        Predim = np.asarray(Image.open(os.path.join(Pred,im[::-1].replace('gnp.', 'gpj.', 1)[::-1])).convert('L').resize((sz[1],sz[0]),Image.NEAREST))
+        #Predim.setflags(write=1)
         for j in range(0,nth):
             th = mth[j]
             tp = (Predim>th) & posPoints
@@ -55,16 +55,16 @@ def computeBER_mth(GT,Pred,mth):
         pA = 100 - 100*posAcc
         nA = 100 -100 * negAcc
         BER = 0.5 * (2-posAcc - negAcc)*100
-        acc = (np.sum(stats[j,:,0]) + np.sum(stats[j,:,1]))/(np.sum(stats[j,:,02]) + np.sum(stats[j,:,3]))
-        print('ACC,BER,pA,nA,th')
+        acc = (np.sum(stats[j,:,0]) + np.sum(stats[j,:,1]))/(np.sum(stats[j,:,2]) + np.sum(stats[j,:,3]))
         all[j,:] = [acc,BER,pA,nA,mth[j]]
         #all.append([BER,pA,nA,mth[j]])
         #print(BER,posAcc,negAcc,pA,nA)
     
+    print('ACC,BER,pA,nA,th')
     #all = np.sort(all,axis=0)
-    ##sort by increasing BER
+    #sort by increasing BER
     ind = np.argsort(all[:,1])
-#    print all
+    #print(all)
     
     return all[ind[0],:]
 
@@ -84,8 +84,15 @@ def computeISTD_BER(pred,mth=255*np.arange(0,0.2,0.02)):
 
 def computeSBU_BER(pred,mth=255*np.arange(0,0.2,0.02)):
     return computeBER_mth('/nfs/bigbox/hieule/GAN/ECCV18_sdrm/evaluation/TestB',pred,mth)
+
+
 if __name__ == "__main__":
 
-    print computeBER_mth('/nfs/bigbox/hieule/GAN/datasets/ISTD_Dataset/test256/test256_B','/nfs/bigbox/hieule/GAN/code/BDRAR/ckpt/BDRAR/istd_prediction_3000',255*np.arange(0,0.5,0.05))
-    print computeBER_mth('/nfs/bigbox/hieule/GAN/datasets/ISTD_Dataset/test256/test256_B','/nfs/bigbox/hieule/GAN/ADNET_demo/ISTDtest_512',[0,1,5,10,15])
-    print computeBER_mth('/nfs/bigbox/hieule/GAN/datasets/ISTD_Dataset/test256/test256_B','/nfs/bigbox/hieule/GAN/data/CVPR19/RES_man/ISTD_test_256///sdcnn_l0_ndf32_ngf64_gr0_sm0_t0_bd0_SD0_GAN0_bs16_lr0.0002_ls280_fS256_al0_concat3unet_256_basic_sd_xavier_Concat3_256_sd_best',[0,5,10,25,50])
+    print(computeBER_mth('/data/add_disk0/shilinhu/SBU/SBU-Test/ShadowMasks', '/data/add_disk0/shilinhu/my_results/re/2500/sbu', mth=255*np.arange(0,0.8,0.02)))
+    print(computeBER_mth('/data/add_disk0/shilinhu/SBU/SBU-Test/ShadowMasks', '/data/add_disk0/shilinhu/my_results/re/3000/sbu', mth=255*np.arange(0,0.8,0.02)))
+    print(computeBER_mth('/data/add_disk0/shilinhu/SBU/SBU-Test/ShadowMasks', '/data/add_disk0/shilinhu/my_results/re/3500/sbu', mth=255*np.arange(0,0.8,0.02)))
+    print(computeBER_mth('/data/add_disk0/shilinhu/SBU/SBU-Test/ShadowMasks', '/data/add_disk0/shilinhu/my_results/re/4000/sbu', mth=255*np.arange(0,0.8,0.02)))
+    #print(computeBER_mth('/data/add_disk0/shilinhu/SBU/SBU-Test/ShadowMasks', '/data/add_disk0/shilinhu/my_results/re/4500/sbu', mth=255*np.arange(0,0.8,0.02)))
+    #print(computeBER_mth('/data/add_disk0/shilinhu/SBU/SBU-Test/ShadowMasks', '/data/add_disk0/shilinhu/my_results/re/5000/sbu', mth=255*np.arange(0,0.8,0.02)))
+    #print(computeBER_mth('/data/add_disk0/shilinhu/SBU/SBU-Test/ShadowMasks', '/data/add_disk0/shilinhu/test_bdrar/2_2000/sbu', mth=255*np.arange(0,0.8,0.02)))
+    #print(computeBER_mth('/data/add_disk0/shilinhu/SBU/SBU-Test/ShadowMasks', '/data/add_disk0/shilinhu/test_bdrar/size1_2000/sbu', mth=255*np.arange(0,0.8,0.02)))

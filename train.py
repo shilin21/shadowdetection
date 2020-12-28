@@ -25,7 +25,7 @@ exp_name = 'BDRAR'
 # batch size of 8 with resolution of 416*416 is exactly OK for the GTX 1080Ti GPU
 args = {
     'iter_num': 5000,
-    'train_batch_size': 4,
+    'train_batch_size': 8,
     'last_iter': 0,
     'lr': 5e-3,
     'lr_decay': 0.9,
@@ -138,12 +138,13 @@ def train(net, optimizer):
                   (curr_iter, train_loss_record.avg, loss_fuse_record.avg, loss1_h2l_record.avg, loss2_h2l_record.avg,
                    loss3_h2l_record.avg, loss4_h2l_record.avg, loss1_l2h_record.avg, loss2_l2h_record.avg,
                    loss3_l2h_record.avg, loss4_l2h_record.avg, optimizer.param_groups[1]['lr'])
-            print log
+            print(log)
             open(log_path, 'a').write(log + '\n')
 
-            if curr_iter >= args['iter_num']:
+            if curr_iter > 1500 and curr_iter % 500 == 0:
                 torch.save(net.state_dict(), os.path.join(ckpt_path, exp_name, 'train_%d.pth' % curr_iter))
-                return
+                if curr_iter >= args['iter_num']:
+                    return
 
 
 if __name__ == '__main__':
