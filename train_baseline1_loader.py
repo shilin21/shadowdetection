@@ -1,5 +1,8 @@
 import datetime
 import os
+from PIL import Image
+import random
+import numpy as np
 import argparse
 
 import torch
@@ -9,17 +12,19 @@ from torch.autograd import Variable
 from torch.backends import cudnn
 from torch.utils.data import DataLoader
 from torchvision import transforms
+from torch.nn import functional as F
 
 import joint_transforms
 from config import *
-from dataset import ImageFolder
-from misc import AvgMeter, check_mkdir
+from dataset import ImageFolder, VideoframeDataset
+from misc import AvgMeter, check_mkdir, crf_refine
 from model import BDRAR
 
 cudnn.benchmark = True
 
 ckpt_path = './ckpt'
 exp_name = 'BDRAR'
+con_path = '/data/add_disk0/shilinhu/small_shadow/train'
 
 # batch size of 8 with resolution of 416*416 is exactly OK for the GTX 1080Ti GPU
 #args = {
@@ -33,6 +38,7 @@ exp_name = 'BDRAR'
 #    'snapshot': '',
 #    'scale': 416
 #}
+
 a = argparse.ArgumentParser()
 a.add_argument("--cuda", type=int, default=0, help="cuda device number")
 a.add_argument("--data", type=str, default='SBU', help="train dataset")
@@ -46,9 +52,12 @@ a.add_argument("--weight_decay", type=float, default=5e-4, help="weight decay ra
 a.add_argument("--momentum", type=float, default=0.9, help="momentum rate")
 a.add_argument("--snapshot", type=str, default='', help="loading snapshot")
 a.add_argument("--scale", type=int, default=416, help="image scale")
+a.add_argument("--con_type", type=str, default='size', help="consistency loss type")
+a.add_argument("--con_batch", type=int, default=4, help="train consistency batch scale")
+a.add_argument("--alpha", type=float, default=1.0, help="importance of consistency loss")
 args = a.parse_args()
 
-torch.cuda.set_device(args.cuda)
+device = torch.device("cuda:%d" % (args.cuda) if torch.cuda.is_available() else "cpu")
 
 joint_transform = joint_transforms.Compose([
     joint_transforms.RandomHorizontallyFlip(),
@@ -70,12 +79,21 @@ if args.data == 'CUHK':
     train_set = ImageFolder(cuhk_training_root, args.data, args.sub, joint_transform, img_transform, target_transform)
 train_loader = DataLoader(train_set, batch_size=args.train_batch_size, num_workers=8, shuffle=True)
 
-bce_logit = nn.BCEWithLogitsLoss().cuda()
+bce_logit = nn.BCEWithLogitsLoss().to(device)
 log_path = os.path.join(ckpt_path, exp_name, str(datetime.datetime.now()) + '.txt')
+
+con_transform = transforms.Compose([
+    transforms.Resize((args.scale, args.scale)),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+])
+vframe_set = VideoframeDataset(con_path, seq_len=args.con_batch, transform=con_transform)
+vframe_loader = DataLoader(vframe_set, batch_size=1, num_workers=8, shuffle=True)
+loader_iter = iter(vframe_loader)
 
 
 def main():
-    net = BDRAR().cuda().train()
+    net = BDRAR().to(device).train()
 
     optimizer = optim.SGD([
         {'params': [param for name, param in net.named_parameters() if name[-4:] == 'bias'],
@@ -104,35 +122,69 @@ def train(net, optimizer):
         loss2_h2l_record, loss3_h2l_record, loss4_h2l_record = AvgMeter(), AvgMeter(), AvgMeter()
         loss1_l2h_record, loss2_l2h_record, loss3_l2h_record = AvgMeter(), AvgMeter(), AvgMeter()
         loss4_l2h_record = AvgMeter()
+        loss_con_record = AvgMeter()
 
         for i, data in enumerate(train_loader):
             optimizer.param_groups[0]['lr'] = 2 * args.lr * (1 - float(curr_iter) / args.iter_num
                                                                 ) ** args.lr_decay
             optimizer.param_groups[1]['lr'] = args.lr * (1 - float(curr_iter) / args.iter_num
                                                             ) ** args.lr_decay
-
+            
+            # get consistency loss data
+            c_inputs1, c_inputs2 = next(loader_iter)
+            c_inputs1 = c_inputs1.squeeze()
+            c_inputs2 = c_inputs2.squeeze()
+            print(c_inputs1.size(), c_inputs2.size())
+            assert c_inputs1.size() == c_inputs2.size()
+            con_batch_size = c_inputs1.size(0)
+            
             inputs, labels = data
             batch_size = inputs.size(0)
-            inputs = Variable(inputs).cuda()
-            labels = Variable(labels).cuda()
+            labels = Variable(labels).to(device)
+            
+            inputs = torch.cat((inputs, c_inputs1), 0)
+            inputs = Variable(inputs).to(device)
+            
 
             optimizer.zero_grad()
 
             fuse_predict, predict1_h2l, predict2_h2l, predict3_h2l, predict4_h2l, \
             predict1_l2h, predict2_l2h, predict3_l2h, predict4_l2h = net(inputs)
 
-            loss_fuse = bce_logit(fuse_predict, labels)
-            loss1_h2l = bce_logit(predict1_h2l, labels)
-            loss2_h2l = bce_logit(predict2_h2l, labels)
-            loss3_h2l = bce_logit(predict3_h2l, labels)
-            loss4_h2l = bce_logit(predict4_h2l, labels)
-            loss1_l2h = bce_logit(predict1_l2h, labels)
-            loss2_l2h = bce_logit(predict2_l2h, labels)
-            loss3_l2h = bce_logit(predict3_l2h, labels)
-            loss4_l2h = bce_logit(predict4_l2h, labels)
+            loss_fuse = bce_logit(fuse_predict[:batch_size], labels)
+            loss1_h2l = bce_logit(predict1_h2l[:batch_size], labels)
+            loss2_h2l = bce_logit(predict2_h2l[:batch_size], labels)
+            loss3_h2l = bce_logit(predict3_h2l[:batch_size], labels)
+            loss4_h2l = bce_logit(predict4_h2l[:batch_size], labels)
+            loss1_l2h = bce_logit(predict1_l2h[:batch_size], labels)
+            loss2_l2h = bce_logit(predict2_l2h[:batch_size], labels)
+            loss3_l2h = bce_logit(predict3_l2h[:batch_size], labels)
+            loss4_l2h = bce_logit(predict4_l2h[:batch_size], labels)
+            
+            # calculate consistency loss
+            if args.con_type == 'size':
+                con_sigmoid1 = F.sigmoid(fuse_predict[batch_size:])
+                con_size1 = con_sigmoid1.view(con_batch_size,-1).mean(dim=1)
+                # get consistency result
+                c_inputs2 = Variable(c_inputs2, requires_grad=False).to(device)
+                with torch.no_grad():
+                    con_predict2, _, _, _, _, _, _, _, _ = net(c_inputs2)
+                    con_sigmoid2 = F.sigmoid(con_predict2)
+                    con_size2 = con_sigmoid2.view(con_batch_size,-1).mean(dim=1)
+
+                loss_con = F.l1_loss(con_size1, con_size2)
+            if args.con_type == 'pixel':
+                con_sigmoid1 = F.sigmoid(fuse_predict[batch_size:])
+                # get consistency result
+                c_inputs2 = Variable(c_inputs2, requires_grad=False).to(device)
+                with torch.no_grad():
+                    con_predict2, _, _, _, _, _, _, _, _ = net(c_inputs2)
+                    con_sigmoid2 = F.sigmoid(con_predict2)
+                
+                loss_con = F.mse_loss(con_sigmoid1, con_sigmoid2)
 
             loss = loss_fuse + loss1_h2l + loss2_h2l + loss3_h2l + loss4_h2l + loss1_l2h + \
-                   loss2_l2h + loss3_l2h + loss4_l2h
+                   loss2_l2h + loss3_l2h + loss4_l2h + (loss_con * args.alpha)
             loss.backward()
 
             optimizer.step()
@@ -147,22 +199,25 @@ def train(net, optimizer):
             loss2_l2h_record.update(loss2_l2h.data, batch_size)
             loss3_l2h_record.update(loss3_l2h.data, batch_size)
             loss4_l2h_record.update(loss4_l2h.data, batch_size)
+            loss_con_record.update(loss_con.data, con_batch_size)
 
             curr_iter += 1
 
             log = '[iter %d], [train loss %.5f], [loss_fuse %.5f], [loss1_h2l %.5f], [loss2_h2l %.5f], ' \
-                  '[loss3_h2l %.5f], [loss4_h2l %.5f], [loss1_l2h %.5f], [loss2_l2h %.5f], [loss3_l2h %.5f], ' \
-                  '[loss4_l2h %.5f], [lr %.13f]' % \
-                  (curr_iter, train_loss_record.avg, loss_fuse_record.avg, loss1_h2l_record.avg, loss2_h2l_record.avg,
-                   loss3_h2l_record.avg, loss4_h2l_record.avg, loss1_l2h_record.avg, loss2_l2h_record.avg,
-                   loss3_l2h_record.avg, loss4_l2h_record.avg, optimizer.param_groups[1]['lr'])
+                  '[loss3_h2l %.5f], [loss4_h2l %.5f], [loss1_l2h %.5f], [loss2_l2h %.5f], ' \
+                  '[loss3_l2h %.5f], [loss4_l2h %.5f], [lr %.13f], [loss_con %.5f]' % \
+                  (curr_iter, train_loss_record.avg, loss_fuse_record.avg, loss1_h2l_record.avg,
+                   loss2_h2l_record.avg, loss3_h2l_record.avg, loss4_h2l_record.avg, 
+                   loss1_l2h_record.avg, loss2_l2h_record.avg, loss3_l2h_record.avg, 
+                   loss4_l2h_record.avg, optimizer.param_groups[1]['lr'], loss_con_record.avg)
             print(log)
             open(log_path, 'a').write(log + '\n')
 
             if curr_iter > 1500 and curr_iter % 500 == 0:
-                torch.save(net.state_dict(), os.path.join(ckpt_path, exp_name, 'train_%d.pth' % curr_iter))
-                if curr_iter >= args.iter_num:
-                    return
+                torch.save(net.state_dict(), 
+                           os.path.join(ckpt_path, exp_name, 'baseline1_%s_alpha%.1f_batch%d%d_%d.pth' % (args.con_type, args.alpha, args.train_batch_size, args.con_batch, curr_iter)))
+            if curr_iter >= args.iter_num:
+                return
 
 
 if __name__ == '__main__':
