@@ -52,6 +52,8 @@ class BaseOptions():
         parser.add_argument('--load_iter', type=int, default='0', help='which iteration to load? if load_iter > 0, the code will load models by iter_[load_iter]; otherwise, the code will load models by [epoch]')
         parser.add_argument('--verbose', action='store_true', help='if specified, print more debugging information')
         parser.add_argument('--suffix', default='', type=str, help='customized suffix: opt.name = opt.name + suffix: e.g., {model}_{netG}_size{load_size}')
+        parser.add_argument('--normalize', default=False, help='whether normalize the image')
+        parser.add_argument('--union', default=False, help='whether union labeled and unlabeled data')
         self.initialized = True
         return parser
 

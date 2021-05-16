@@ -9,6 +9,8 @@ from .sync_batchnorm.batchnorm import SynchronizedBatchNorm2d
 from .backbone import build_backbone
 from .backbone import resnet, xception, drn, mobilenet
 from .irnn import irnn
+from .pwclite import resize_flow
+from torch.autograd import Variable
 
 ###############################################################################
 # Helper Functions
@@ -164,6 +166,12 @@ def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, in
     return init_net(net, init_type, init_gain, gpu_ids)
 
 
+def define_unet(input_nc, output_nc, ngf, norm='batch', use_dropout=False, init_type='normal', init_gain=0.02, gpu_ids=[]):
+    norm_layer = get_norm_layer(norm_type=norm)
+    net = UnetGenerator(input_nc, output_nc, 9, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
+    return init_net(net, init_type, init_gain, gpu_ids)
+
+
 def define_bdrar(init_type='normal', init_gain=0.02, gpu_ids=[]):
     net = BDRAR()
     return init_net(net, init_type, init_gain, gpu_ids)
@@ -194,7 +202,11 @@ def extra_layer(base_model_cfg, vgg):
 
 def define_fsd(num_classes, backbone, output_stride, sync_bn, freeze_bn, init_type='normal', init_gain=0.02, gpu_ids=[]):
     net = FSDNet(num_classes=num_classes, backbone=backbone, output_stride=output_stride, sync_bn=sync_bn, freeze_bn=freeze_bn)
-    return init_net(net, init_type, init_gain, gpu_ids)
+    if len(gpu_ids) > 0:
+        assert(torch.cuda.is_available())
+        net.to(gpu_ids[0])
+        net = torch.nn.DataParallel(net, gpu_ids)  # multi-GPUs
+    return net
 
 
 def build_backbone(backbone, output_stride, BatchNorm):
@@ -208,6 +220,49 @@ def build_backbone(backbone, output_stride, BatchNorm):
         return mobilenet.MobileNetV2(output_stride, BatchNorm)
     else:
         raise NotImplementedError
+        
+        
+def define_esd(backbone, output_stride, num_classes, sync_bn, freeze_bn, gpu_ids=[]):
+    net = ESDNet(backbone=backbone, output_stride=output_stride, num_classes=num_classes, 
+                 sync_bn=sync_bn, freeze_bn=freeze_bn)
+    if len(gpu_ids) > 0:
+        assert(torch.cuda.is_available())
+        net.to(gpu_ids[0])
+        net = torch.nn.DataParallel(net, gpu_ids)  # multi-GPUs
+    return net
+
+
+def define_ls(backbone, output_stride, num_classes, sync_bn, freeze_bn, gpu_ids=[]):
+    net = LSNet(backbone=backbone, output_stride=output_stride, num_classes=num_classes, 
+                 sync_bn=sync_bn, freeze_bn=freeze_bn)
+    if len(gpu_ids) > 0:
+        assert(torch.cuda.is_available())
+        net.to(gpu_ids[0])
+        net = torch.nn.DataParallel(net, gpu_ids)  # multi-GPUs
+    return net
+
+
+def define_fw(num_classes, backbone, output_stride, sync_bn, freeze_bn, gpu_ids=[]):
+    net = FWNet(num_classes=num_classes, backbone=backbone, output_stride=output_stride, sync_bn=sync_bn, freeze_bn=freeze_bn)
+    if len(gpu_ids) > 0:
+        assert(torch.cuda.is_available())
+        net.to(gpu_ids[0])
+        net = torch.nn.DataParallel(net, gpu_ids)  # multi-GPUs
+    return net
+
+
+def define_fw255(num_classes, backbone, output_stride, sync_bn, freeze_bn, gpu_ids=[]):
+    net = FWNet255(num_classes=num_classes, backbone=backbone, output_stride=output_stride, sync_bn=sync_bn, freeze_bn=freeze_bn)
+    if len(gpu_ids) > 0:
+        assert(torch.cuda.is_available())
+        net.to(gpu_ids[0])
+        net = torch.nn.DataParallel(net, gpu_ids)  # multi-GPUs
+    return net
+
+
+def define_flowcnn(init_type='normal', init_gain=0.02, gpu_ids=[]):
+    net = FlowCNN()
+    return init_net(net, init_type, init_gain, gpu_ids)
     
 
 ##############################################################################
@@ -932,7 +987,7 @@ class Decoder(nn.Module):
 
 
 
-    def forward(self, dsc, low_level_feat, middle_level_feat,high_level_feat):
+    def forward(self, dsc, low_level_feat, middle_level_feat, high_level_feat):
 
 
         low_dsc = self.reduce_low_dsc(dsc)
@@ -961,6 +1016,7 @@ class Decoder(nn.Module):
 
 
     def _init_weight(self):
+        print('initializing decoder params')
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 torch.nn.init.kaiming_normal_(m.weight)
@@ -1005,10 +1061,10 @@ class FSDNet(nn.Module):
         dsc = self.dsc(x)
         x = self.reduce2(torch.cat((high_level_feat, dsc), 1))
 
-        x = self.decoder(dsc, low_level_feat, middle_level_feat,x) # 256,256,256,256
+        x = self.decoder(dsc, low_level_feat, middle_level_feat, x) # 256,256,256,256
         x = F.interpolate(x, size=input.size()[2:], mode='bilinear', align_corners=True)
+        
         x = torch.sigmoid(x)
-
         
         return x
 
@@ -1039,3 +1095,535 @@ class FSDNet(nn.Module):
                     for p in m[1].parameters():
                         if p.requires_grad:
                             yield p
+
+
+class ESDNet(nn.Module):
+    def __init__(self, backbone='mobilenet', output_stride=16, num_classes=1, 
+                 sync_bn=None, freeze_bn=False):
+        super(ESDNet, self).__init__()
+        if sync_bn == True:
+            BatchNorm = SynchronizedBatchNorm2d
+        else:
+            BatchNorm = nn.BatchNorm2d
+            
+        self.branch1 = FSDNet(backbone, output_stride, num_classes, sync_bn, freeze_bn)
+        
+        self.branch2 = FSDNet(backbone, output_stride, num_classes, sync_bn, freeze_bn)
+        self.branch2.backbone.low_level_features[0] = mobilenet.conv_bn(4, 32, 2, BatchNorm)
+        
+    
+    def forward(self, input):
+        x1 = self.branch1(input)
+        x1_d = x1.detach()
+        x = torch.cat([x1_d, input], 1)
+        x = self.branch2(x)
+        
+        return x1,x
+    
+    def freeze_bn(self):
+        for m in self.branch1.modules():
+            if isinstance(m, SynchronizedBatchNorm2d):
+                m.eval()
+            elif isinstance(m, nn.BatchNorm2d):
+                m.eval()
+        for m in self.branch2.modules():
+            if isinstance(m, SynchronizedBatchNorm2d):
+                m.eval()
+            elif isinstance(m, nn.BatchNorm2d):
+                m.eval()
+                
+    def get_1x_lr_params(self):
+        modules = [self.branch1.backbone, self.branch2.backbone]
+        for i in range(len(modules)):
+            for m in modules[i].named_modules():
+                if isinstance(m[1], nn.Conv2d) or isinstance(m[1], SynchronizedBatchNorm2d) \
+                        or isinstance(m[1], nn.BatchNorm2d):
+                    for p in m[1].parameters():
+                        if p.requires_grad:
+                            yield p
+    
+    def get_10x_lr_params(self):
+        modules = [self.branch1.reduce1, self.branch1.reduce2, self.branch1.dsc, self.branch1.decoder, 
+                   self.branch2.reduce1, self.branch2.reduce2, self.branch2.dsc, self.branch2.decoder]
+        for i in range(len(modules)):
+            for m in modules[i].named_modules():
+                if isinstance(m[1], nn.Conv2d) or isinstance(m[1], SynchronizedBatchNorm2d) \
+                        or isinstance(m[1], nn.BatchNorm2d):
+                    for p in m[1].parameters():
+                        if p.requires_grad:
+                            yield p
+
+                            
+class LSNet(nn.Module):
+    def __init__(self, backbone='mobilenet', output_stride=16, num_classes=1, 
+                 sync_bn=None, freeze_bn=False):
+        super(LSNet, self).__init__()
+        if sync_bn == True:
+            BatchNorm = SynchronizedBatchNorm2d
+        else:
+            BatchNorm = nn.BatchNorm2d
+            
+        self.branch1 = FSDNet(backbone, output_stride, num_classes, sync_bn, freeze_bn)
+        self.branch2 = FSDNet(backbone, output_stride, num_classes, sync_bn, freeze_bn)
+        
+        self.branch3 = FSDNet(backbone, output_stride, num_classes, sync_bn, freeze_bn)
+        self.branch3.backbone.low_level_features[0] = mobilenet.conv_bn(5, 32, 2, BatchNorm)
+        
+    
+    def forward(self, input):
+        x1 = self.branch1(input)
+        x2 = self.branch2(input)
+        x1_d = x1.detach()
+        x1_c = x1_d.clone()
+        x1_c[x1_c>0.5] = 1
+        x1_c[x1_c<0.5] = 0
+        x2_d = x2.detach()
+        x = torch.cat([x1_c, x2_d, input], 1)
+        x = self.branch3(x)
+        
+        return x1,x2,x
+    
+    def freeze_bn(self):
+        for m in self.branch1.modules():
+            if isinstance(m, SynchronizedBatchNorm2d):
+                m.eval()
+            elif isinstance(m, nn.BatchNorm2d):
+                m.eval()
+        for m in self.branch2.modules():
+            if isinstance(m, SynchronizedBatchNorm2d):
+                m.eval()
+            elif isinstance(m, nn.BatchNorm2d):
+                m.eval()
+        for m in self.branch3.modules():
+            if isinstance(m, SynchronizedBatchNorm2d):
+                m.eval()
+            elif isinstance(m, nn.BatchNorm2d):
+                m.eval()
+                
+    def get_1x_lr_params(self):
+        modules = [self.branch1.backbone, self.branch2.backbone, self.branch3.backbone]
+        for i in range(len(modules)):
+            for m in modules[i].named_modules():
+                if isinstance(m[1], nn.Conv2d) or isinstance(m[1], SynchronizedBatchNorm2d) \
+                        or isinstance(m[1], nn.BatchNorm2d):
+                    for p in m[1].parameters():
+                        if p.requires_grad:
+                            yield p
+    
+    def get_10x_lr_params(self):
+        modules = [self.branch1.reduce1, self.branch1.reduce2, self.branch1.dsc, self.branch1.decoder, 
+                   self.branch2.reduce1, self.branch2.reduce2, self.branch2.dsc, self.branch2.decoder, 
+                   self.branch3.reduce1, self.branch3.reduce2, self.branch3.dsc, self.branch3.decoder]
+        for i in range(len(modules)):
+            for m in modules[i].named_modules():
+                if isinstance(m[1], nn.Conv2d) or isinstance(m[1], SynchronizedBatchNorm2d) \
+                        or isinstance(m[1], nn.BatchNorm2d):
+                    for p in m[1].parameters():
+                        if p.requires_grad:
+                            yield p
+
+                            
+class FlowCNN(nn.Module):
+    def __init__(self):
+        super(FlowCNN, self).__init__()
+        #self.conv1 = nn.Sequential(nn.Conv2d(11, 16, 3, stride=1, padding=1), 
+        #                           nn.ReLU())
+        #self.conv2 = nn.Sequential(nn.Conv2d(16, 32, 3, stride=1, padding=1), 
+        #                           nn.ReLU())
+        #self.conv3 = nn.Sequential(nn.Conv2d(32, 2, 3, stride=1, padding=1), 
+        #                           nn.ReLU())
+        #self.conv4 = nn.Sequential(nn.Conv2d(4, 2, 3, stride=1, padding=1), 
+        #                           nn.ReLU())
+        self.conv1 = nn.Conv2d(11, 32, 3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(32, 64, 3, stride=1, padding=1)
+        self.conv3 = nn.Conv2d(64, 2, 3, stride=1, padding=1)
+        self.conv4 = nn.Conv2d(4, 2, 3, stride=1, padding=1)
+        
+    def forward(self, flow, f1, f2, diff):
+        x = torch.cat([flow, f1, f2, diff], dim=1)
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = self.conv3(x)
+        x = torch.cat([x, flow], dim=1)
+        x = self.conv4(x)
+        return x
+        
+
+class FlowCNN255(nn.Module):
+    def __init__(self):
+        super(FlowCNN255, self).__init__()
+        #self.conv1 = nn.Sequential(nn.Conv2d(11, 16, 3, stride=1, padding=1), 
+        #                           nn.ReLU())
+        #self.conv2 = nn.Sequential(nn.Conv2d(16, 32, 3, stride=1, padding=1), 
+        #                           nn.ReLU())
+        #self.conv3 = nn.Sequential(nn.Conv2d(32, 2, 3, stride=1, padding=1), 
+        #                           nn.ReLU())
+        #self.conv4 = nn.Sequential(nn.Conv2d(4, 2, 3, stride=1, padding=1), 
+        #                           nn.ReLU())
+        self.conv1 = nn.Conv2d(11, 32, 3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(32, 64, 3, stride=1, padding=1)
+        self.conv3 = nn.Conv2d(64, 2, 3, stride=1, padding=1)
+        self.conv4 = nn.Conv2d(4, 2, 3, stride=1, padding=1)
+        
+    def forward(self, flow, f1, f2, diff):
+        x = torch.cat([flow, f1*255, f2*255, diff*255], dim=1)
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = self.conv3(x)
+        x = torch.cat([x, flow], dim=1)
+        x = self.conv4(x)
+        return x
+        
+        
+def pool_f(k_size, stride):
+    return nn.Sequential(
+        nn.AvgPool2d(k_size, stride)
+    )
+        
+        
+class FWNet(nn.Module):
+    def __init__(self, backbone='mobilenet', output_stride=16, num_classes=1,
+                 sync_bn=True, freeze_bn=False):
+        super(FWNet, self).__init__()
+        if sync_bn == True:
+            BatchNorm = SynchronizedBatchNorm2d
+        else:
+            BatchNorm = nn.BatchNorm2d
+
+        self.backbone1 = build_backbone(backbone, output_stride, BatchNorm)
+        self.reduce1_1 = LayerConv(320, 256, 1, 1, 0, False)
+        self.dsc1 = DSC_Module(256, 256)
+        self.reduce1_2 = LayerConv(576, 256, 1, 1, 0, False)
+        self.decoder1 = Decoder(num_classes, backbone, BatchNorm)
+        
+        self.backbone2 = build_backbone(backbone, output_stride, BatchNorm)
+        self.reduce2_1 = LayerConv(320, 256, 1, 1, 0, False)
+        self.dsc2 = DSC_Module(256, 256)
+        self.reduce2_2 = LayerConv(576, 256, 1, 1, 0, False)
+        self.decoder2 = Decoder(num_classes, backbone, BatchNorm)
+        
+        self.flowcnn = FlowCNN()
+        
+        self.flowdown1 = pool_f(2,2)        
+        self.flowdown2 = pool_f(2,2)        
+        self.flowdown3 = pool_f(2,2)        
+        self.flowdown4 = pool_f(2,2)
+        
+        self.weight1_1_low = nn.Parameter(torch.ones(1,24,1,1))
+        self.weight1_1_mid = nn.Parameter(torch.ones(1,32,1,1))
+        self.weight1_1_hig = nn.Parameter(torch.ones(1,320,1,1))
+        self.weight1_2_low = nn.Parameter(torch.zeros(1,24,1,1))
+        self.weight1_2_mid = nn.Parameter(torch.zeros(1,32,1,1))
+        self.weight1_2_hig = nn.Parameter(torch.zeros(1,320,1,1))
+        
+        self.weight2_1_low = nn.Parameter(torch.zeros(1,24,1,1))
+        self.weight2_1_mid = nn.Parameter(torch.zeros(1,32,1,1))
+        self.weight2_1_hig = nn.Parameter(torch.zeros(1,320,1,1))
+        self.weight2_2_low = nn.Parameter(torch.ones(1,24,1,1))
+        self.weight2_2_mid = nn.Parameter(torch.ones(1,32,1,1))
+        self.weight2_2_hig = nn.Parameter(torch.ones(1,320,1,1))
+
+        if freeze_bn:
+            self.freeze_bn()
+            
+            
+    def warp(self, x, flo):
+        """
+        warp an image/tensor (im2) back to im1, according to the optical flow
+        x: [B, C, H, W] (im2)
+        flo: [B, 2, H, W] flow
+        """
+        B, C, H, W = x.size()
+        # mesh grid 
+        xx = torch.arange(0, W).view(1,-1).repeat(H,1)
+        yy = torch.arange(0, H).view(-1,1).repeat(1,W)
+        xx = xx.view(1,1,H,W).repeat(B,1,1,1)
+        yy = yy.view(1,1,H,W).repeat(B,1,1,1)
+        grid = torch.cat((xx,yy),1).float()
+
+        vgrid = Variable(grid).cuda() + flo
+
+        # scale grid to [-1,1] 
+        vgrid[:,0,:,:] = 2.0*vgrid[:,0,:,:].clone() / max(W-1,1)-1.0
+        vgrid[:,1,:,:] = 2.0*vgrid[:,1,:,:].clone() / max(H-1,1)-1.0
+
+        vgrid = vgrid.permute(0,2,3,1)        
+        output = torch.nn.functional.grid_sample(x, vgrid, padding_mode='border')
+        mask = Variable(torch.ones(x.size())).cuda()
+        mask = torch.nn.functional.grid_sample(mask, vgrid, padding_mode='border')
+        
+        mask[mask<0.9999] = 0
+        mask[mask>0] = 1
+        
+        return output*mask
+            
+
+    def forward(self, img1, img2, flow12, flow21):        
+        transflow12 = self.flowcnn(flow12, img1, img2, torch.abs(img1-img2))
+        transflow21 = self.flowcnn(flow21, img2, img1, torch.abs(img2-img1))
+        
+        tf12d1 = self.flowdown1(transflow12)
+        tf12d2 = self.flowdown2(tf12d1)
+        tf12d3 = self.flowdown3(tf12d2)
+        tf12d4 = self.flowdown4(tf12d3)
+        
+        tf21d1 = self.flowdown1(transflow21)
+        tf21d2 = self.flowdown2(tf21d1)
+        tf21d3 = self.flowdown3(tf21d2)
+        tf21d4 = self.flowdown4(tf21d3)
+        
+        low_level_feat1 = self.backbone1.low_level_features(img1)
+        low_level_feat2 = self.backbone2.low_level_features(img2)
+        warped_low_1 = self.warp(low_level_feat1, tf21d2)        
+        warped_low_2 = self.warp(low_level_feat2, tf12d2)
+        new_low_feat1 = self.weight2_1_low * warped_low_2 + self.weight1_1_low * low_level_feat1
+        new_low_feat2 = self.weight1_2_low * warped_low_1 + self.weight2_2_low * low_level_feat2
+        
+        middle_level_feat1 = self.backbone1.middle_level_features(new_low_feat1)
+        middle_level_feat2 = self.backbone2.middle_level_features(new_low_feat2)
+        warped_mid_1 = self.warp(middle_level_feat1, tf21d3)
+        warped_mid_2 = self.warp(middle_level_feat2, tf12d3)
+        new_mid_feat1 = self.weight2_1_mid * warped_mid_2 + self.weight1_1_mid * middle_level_feat1
+        new_mid_feat2 = self.weight1_2_mid * warped_mid_1 + self.weight2_2_mid * middle_level_feat2
+        
+        high_level_feat1 = self.backbone1.high_level_features(new_mid_feat1)
+        high_level_feat2 = self.backbone2.high_level_features(new_mid_feat2)
+        warped_high_1 = self.warp(high_level_feat1, tf21d4)
+        warped_high_2 = self.warp(high_level_feat2, tf12d4)
+        new_high_feat1 = self.weight2_1_hig * warped_high_2 + self.weight1_1_hig * high_level_feat1       
+        new_high_feat2 = self.weight1_2_hig * warped_high_1 + self.weight2_2_hig * high_level_feat2
+
+        x1 = self.reduce1_1(new_high_feat1)
+        dsc1 = self.dsc1(x1)
+        x1 = self.reduce1_2(torch.cat((new_high_feat1, dsc1), 1))
+
+        x1 = self.decoder1(dsc1, new_low_feat1, new_mid_feat1, x1) # 256,256,256,256
+        x1 = F.interpolate(x1, size=img1.size()[2:], mode='bilinear', align_corners=True)       
+        x1 = torch.sigmoid(x1)
+        
+        x2 = self.reduce2_1(new_high_feat2)
+        dsc2 = self.dsc2(x2)
+        x2 = self.reduce2_2(torch.cat((new_high_feat2, dsc2), 1))
+
+        x2 = self.decoder2(dsc2, new_low_feat2, new_mid_feat2, x2) # 256,256,256,256
+        x2 = F.interpolate(x2, size=img2.size()[2:], mode='bilinear', align_corners=True)    
+        x2 = torch.sigmoid(x2)
+        
+        return x1, x2, transflow12, transflow21
+
+
+    def freeze_bn(self):
+        for m in self.modules():
+            if isinstance(m, SynchronizedBatchNorm2d):
+                m.eval()
+            elif isinstance(m, nn.BatchNorm2d):
+                m.eval()
+
+    def get_1x_lr_params(self):
+        modules = [self.backbone1, self.backbone2]
+        for i in range(len(modules)):
+            for m in modules[i].named_modules():
+                if isinstance(m[1], nn.Conv2d) or isinstance(m[1], SynchronizedBatchNorm2d) \
+                        or isinstance(m[1], nn.BatchNorm2d):
+                    for p in m[1].parameters():
+                        if p.requires_grad:
+                            yield p
+
+    def get_10x_lr_params(self):
+        modules = [self.reduce1_1, self.reduce1_2, self.dsc1, self.decoder1, 
+                   self.reduce2_1, self.reduce2_2, self.dsc2, self.decoder2,
+                   self.flowdown1, self.flowdown2, self.flowdown3, self.flowdown4]
+        for i in range(len(modules)):
+            for m in modules[i].named_modules():
+                if isinstance(m[1], nn.Conv2d) or isinstance(m[1], SynchronizedBatchNorm2d) \
+                        or isinstance(m[1], nn.BatchNorm2d):
+                    for p in m[1].parameters():
+                        if p.requires_grad:
+                            yield p
+                            
+        weights = [self.weight1_1_low, self.weight1_1_mid, self.weight1_1_hig, 
+                   self.weight1_2_low, self.weight1_2_mid, self.weight1_2_hig, 
+                   self.weight2_1_low, self.weight2_1_mid, self.weight2_1_hig, 
+                   self.weight2_2_low, self.weight2_2_mid, self.weight2_2_hig]
+        for i in range(len(weights)):
+            if weights[i].requires_grad:
+                yield weights[i]
+                
+
+class FWNet255(nn.Module):
+    def __init__(self, backbone='mobilenet', output_stride=16, num_classes=1,
+                 sync_bn=True, freeze_bn=False):
+        super(FWNet255, self).__init__()
+        if sync_bn == True:
+            BatchNorm = SynchronizedBatchNorm2d
+        else:
+            BatchNorm = nn.BatchNorm2d
+
+        self.backbone1 = build_backbone(backbone, output_stride, BatchNorm)
+        self.reduce1_1 = LayerConv(320, 256, 1, 1, 0, False)
+        self.dsc1 = DSC_Module(256, 256)
+        self.reduce1_2 = LayerConv(576, 256, 1, 1, 0, False)
+        self.decoder1 = Decoder(num_classes, backbone, BatchNorm)
+        
+        self.backbone2 = build_backbone(backbone, output_stride, BatchNorm)
+        self.reduce2_1 = LayerConv(320, 256, 1, 1, 0, False)
+        self.dsc2 = DSC_Module(256, 256)
+        self.reduce2_2 = LayerConv(576, 256, 1, 1, 0, False)
+        self.decoder2 = Decoder(num_classes, backbone, BatchNorm)
+        
+        self.flowcnn = FlowCNN()
+        
+        #self.flowdown1 = pool_f(2,2)        
+        #self.flowdown2 = pool_f(2,2)        
+        #self.flowdown3 = pool_f(2,2)        
+        #self.flowdown4 = pool_f(2,2)
+        
+        self.weight1_1_low = nn.Parameter(torch.ones(1,24,1,1))
+        self.weight1_1_mid = nn.Parameter(torch.ones(1,32,1,1))
+        self.weight1_1_hig = nn.Parameter(torch.ones(1,320,1,1))
+        self.weight1_2_low = nn.Parameter(torch.zeros(1,24,1,1))
+        self.weight1_2_mid = nn.Parameter(torch.zeros(1,32,1,1))
+        self.weight1_2_hig = nn.Parameter(torch.zeros(1,320,1,1))
+        
+        self.weight2_1_low = nn.Parameter(torch.zeros(1,24,1,1))
+        self.weight2_1_mid = nn.Parameter(torch.zeros(1,32,1,1))
+        self.weight2_1_hig = nn.Parameter(torch.zeros(1,320,1,1))
+        self.weight2_2_low = nn.Parameter(torch.ones(1,24,1,1))
+        self.weight2_2_mid = nn.Parameter(torch.ones(1,32,1,1))
+        self.weight2_2_hig = nn.Parameter(torch.ones(1,320,1,1))
+
+        if freeze_bn:
+            self.freeze_bn()
+            
+            
+    def warp(self, x, flo):
+        """
+        warp an image/tensor (im2) back to im1, according to the optical flow
+        x: [B, C, H, W] (im2)
+        flo: [B, 2, H, W] flow
+        """
+        B, C, H, W = x.size()
+        # mesh grid 
+        xx = torch.arange(0, W).view(1,-1).repeat(H,1)
+        yy = torch.arange(0, H).view(-1,1).repeat(1,W)
+        xx = xx.view(1,1,H,W).repeat(B,1,1,1)
+        yy = yy.view(1,1,H,W).repeat(B,1,1,1)
+        grid = torch.cat((xx,yy),1).float()
+
+        vgrid = Variable(grid).cuda() + flo
+
+        # scale grid to [-1,1] 
+        vgrid[:,0,:,:] = 2.0*vgrid[:,0,:,:].clone() / max(W-1,1)-1.0
+        vgrid[:,1,:,:] = 2.0*vgrid[:,1,:,:].clone() / max(H-1,1)-1.0
+
+        vgrid = vgrid.permute(0,2,3,1)        
+        output = torch.nn.functional.grid_sample(x, vgrid, padding_mode='border')
+        mask = Variable(torch.ones(x.size())).cuda()
+        mask = torch.nn.functional.grid_sample(mask, vgrid, padding_mode='border')
+        
+        mask[mask<0.9999] = 0
+        mask[mask>0] = 1
+        
+        return output*mask
+            
+
+    def forward(self, img1, img2, flow12, flow21):        
+        transflow12 = self.flowcnn(flow12, img1, img2, torch.abs(img1-img2))
+        transflow21 = self.flowcnn(flow21, img2, img1, torch.abs(img2-img1))
+        
+        #tf12d1 = self.flowdown1(transflow12)
+        #tf12d2 = self.flowdown2(tf12d1)
+        #tf12d3 = self.flowdown3(tf12d2)
+        #tf12d4 = self.flowdown4(tf12d3)
+        #tf12d1 = resize_flow(transflow12, (256,256))
+        tf12d1 = resize_flow(flow12, (256,256))
+        tf12d2 = resize_flow(tf12d1, (128,128))
+        tf12d3 = resize_flow(tf12d2, (64,64))
+        tf12d4 = resize_flow(tf12d3, (32,32))
+        
+        #tf21d1 = self.flowdown1(transflow21)
+        #tf21d2 = self.flowdown2(tf21d1)
+        #tf21d3 = self.flowdown3(tf21d2)
+        #tf21d4 = self.flowdown4(tf21d3)
+        #tf21d1 = resize_flow(transflow21, (256,256))
+        tf21d1 = resize_flow(flow21, (256,256))
+        tf21d2 = resize_flow(tf21d1, (128,128))
+        tf21d3 = resize_flow(tf21d2, (64,64))
+        tf21d4 = resize_flow(tf21d3, (32,32))
+        
+        low_level_feat1 = self.backbone1.low_level_features(img1)
+        low_level_feat2 = self.backbone2.low_level_features(img2)
+        warped_low_1 = self.warp(low_level_feat1, tf21d2)        
+        warped_low_2 = self.warp(low_level_feat2, tf12d2)
+        new_low_feat1 = self.weight2_1_low * warped_low_2 + self.weight1_1_low * low_level_feat1
+        new_low_feat2 = self.weight1_2_low * warped_low_1 + self.weight2_2_low * low_level_feat2
+        
+        middle_level_feat1 = self.backbone1.middle_level_features(new_low_feat1)
+        middle_level_feat2 = self.backbone2.middle_level_features(new_low_feat2)
+        warped_mid_1 = self.warp(middle_level_feat1, tf21d3)
+        warped_mid_2 = self.warp(middle_level_feat2, tf12d3)
+        new_mid_feat1 = self.weight2_1_mid * warped_mid_2 + self.weight1_1_mid * middle_level_feat1
+        new_mid_feat2 = self.weight1_2_mid * warped_mid_1 + self.weight2_2_mid * middle_level_feat2
+        
+        high_level_feat1 = self.backbone1.high_level_features(new_mid_feat1)
+        high_level_feat2 = self.backbone2.high_level_features(new_mid_feat2)
+        warped_high_1 = self.warp(high_level_feat1, tf21d4)
+        warped_high_2 = self.warp(high_level_feat2, tf12d4)
+        new_high_feat1 = self.weight2_1_hig * warped_high_2 + self.weight1_1_hig * high_level_feat1       
+        new_high_feat2 = self.weight1_2_hig * warped_high_1 + self.weight2_2_hig * high_level_feat2
+
+        x1 = self.reduce1_1(new_high_feat1)
+        dsc1 = self.dsc1(x1)
+        x1 = self.reduce1_2(torch.cat((new_high_feat1, dsc1), 1))
+
+        x1 = self.decoder1(dsc1, new_low_feat1, new_mid_feat1, x1) # 256,256,256,256
+        x1 = F.interpolate(x1, size=img1.size()[2:], mode='bilinear', align_corners=True)       
+        x1 = torch.sigmoid(x1)
+        
+        x2 = self.reduce2_1(new_high_feat2)
+        dsc2 = self.dsc2(x2)
+        x2 = self.reduce2_2(torch.cat((new_high_feat2, dsc2), 1))
+
+        x2 = self.decoder2(dsc2, new_low_feat2, new_mid_feat2, x2) # 256,256,256,256
+        x2 = F.interpolate(x2, size=img2.size()[2:], mode='bilinear', align_corners=True)    
+        x2 = torch.sigmoid(x2)
+        
+        return x1, x2, transflow12, transflow21
+
+
+    def freeze_bn(self):
+        for m in self.modules():
+            if isinstance(m, SynchronizedBatchNorm2d):
+                m.eval()
+            elif isinstance(m, nn.BatchNorm2d):
+                m.eval()
+
+    def get_1x_lr_params(self):
+        modules = [self.backbone1, self.backbone2, self.flowcnn]
+        for i in range(len(modules)):
+            for m in modules[i].named_modules():
+                if isinstance(m[1], nn.Conv2d) or isinstance(m[1], SynchronizedBatchNorm2d) \
+                        or isinstance(m[1], nn.BatchNorm2d):
+                    for p in m[1].parameters():
+                        if p.requires_grad:
+                            yield p
+
+    def get_10x_lr_params(self):
+        modules = [self.reduce1_1, self.reduce1_2, self.dsc1, self.decoder1, 
+                   self.reduce2_1, self.reduce2_2, self.dsc2, self.decoder2]
+        for i in range(len(modules)):
+            for m in modules[i].named_modules():
+                if isinstance(m[1], nn.Conv2d) or isinstance(m[1], SynchronizedBatchNorm2d) \
+                        or isinstance(m[1], nn.BatchNorm2d):
+                    for p in m[1].parameters():
+                        if p.requires_grad:
+                            yield p
+                            
+        weights = [self.weight1_1_low, self.weight1_1_mid, self.weight1_1_hig, 
+                   self.weight1_2_low, self.weight1_2_mid, self.weight1_2_hig, 
+                   self.weight2_1_low, self.weight2_1_mid, self.weight2_1_hig, 
+                   self.weight2_2_low, self.weight2_2_mid, self.weight2_2_hig]
+        for i in range(len(weights)):
+            if weights[i].requires_grad:
+                yield weights[i]
+

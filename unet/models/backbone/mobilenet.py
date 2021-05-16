@@ -68,7 +68,7 @@ class InvertedResidual(nn.Module):
 
 
 class MobileNetV2(nn.Module):
-    def __init__(self, output_stride=8, BatchNorm=None, width_mult=1., pretrained=True):
+    def __init__(self, output_stride=16, BatchNorm=None, width_mult=1., pretrained=True):
         super(MobileNetV2, self).__init__()
         block = InvertedResidual
         input_channel = 32
@@ -125,6 +125,7 @@ class MobileNetV2(nn.Module):
 
     def _load_pretrained_model(self):
         pretrain_dict = model_zoo.load_url('http://jeff95.me/models/mobilenet_v2-6a65762b.pth')
+        print('loading pretrained model of MobileNet...')
         model_dict = {}
         state_dict = self.state_dict()
         for k, v in pretrain_dict.items():
@@ -136,8 +137,6 @@ class MobileNetV2(nn.Module):
     def _initialize_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                # n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                # m.weight.data.normal_(0, math.sqrt(2. / n))
                 torch.nn.init.kaiming_normal_(m.weight)
             elif isinstance(m, SynchronizedBatchNorm2d):
                 m.weight.data.fill_(1)

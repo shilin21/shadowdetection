@@ -33,8 +33,8 @@ def computeBER_mth(GT,Pred,mth):
     for i in range(0,len(GTimlist)):
         im = GTimlist[i]
         GTim = np.asarray(Image.open(os.path.join(GT,im)).convert('L'))
-        h, w = GTim.shape
-        GTim = GTim[:, int(w/2):w]
+        #h, w = GTim.shape
+        #GTim = GTim[:, int(w/2):w]
         posPoints = GTim>0.5
         negPoints = GTim<=0.5
         countPos = np.sum(posPoints.astype('uint8'))
@@ -42,7 +42,8 @@ def computeBER_mth(GT,Pred,mth):
         sz = GTim.shape
         GTim = GTim>0.5
         #Predim = np.asarray(Image.open(os.path.join(Pred,im)).convert('L').resize((sz[1],sz[0]),Image.NEAREST))
-        Predim = np.asarray(Image.open(os.path.join(Pred,im.split('.')[0]+'_output.png')).convert('L').resize((sz[1],sz[0]),Image.NEAREST))
+        Predim = np.asarray(Image.open(os.path.join(Pred,im[0:-4]+'_output3.png')).convert('L').resize((sz[1],sz[0]),Image.NEAREST)) 
+        #Predim = np.asarray(Image.open(os.path.join(Pred,im.split('.')[0]+'_output.png')).convert('L').resize((sz[1],sz[0]),Image.NEAREST))
         #Predim = np.asarray(Image.open(os.path.join(Pred, im[::-1].replace('gnp.','gpj.',1)[::-1])).convert('L').resize((sz[1],sz[0]),Image.NEAREST))
         #Predim.setflags(write=1)
         for j in range(0,nth):
@@ -58,7 +59,7 @@ def computeBER_mth(GT,Pred,mth):
         negAcc = np.sum(stats[j,:,1]) / np.sum(stats[j,:,3])
         pA = 100 - 100*posAcc
         nA = 100 -100 * negAcc
-        BER = 0.5 * (2-posAcc - negAcc)*100
+        BER = 0.5 * (2 - posAcc - negAcc)*100
         acc = (np.sum(stats[j,:,0]) + np.sum(stats[j,:,1]))/(np.sum(stats[j,:,2]) + np.sum(stats[j,:,3]))
         all[j,:] = [acc,BER,pA,nA,mth[j]]
         #all.append([BER,pA,nA,mth[j]])
@@ -92,12 +93,12 @@ def computeSBU_BER(pred,mth=255*np.arange(0,0.2,0.02)):
 
 if __name__ == "__main__":
 
-    print(computeBER_mth('/nfs/bigcornea/add_disk0/shilinhu/CUHKshadow/fullset/test', '/home/shilinhu/unet/results/adefsd/test_latest_iter50000/output', mth=255*np.arange(0,0.8,0.02)))
-    #print(computeBER_mth('/data/add_disk0/shilinhu/CUHKshadow/test/mask_ADE', '/data/add_disk0/shilinhu/test_cuhk/ADE/l1_1/3000', mth=255*np.arange(0,0.8,0.02)))
-    #print(computeBER_mth('/data/add_disk0/shilinhu/CUHKshadow/test/mask_ADE', '/data/add_disk0/shilinhu/test_cuhk/ADE/l1_1/3500', mth=255*np.arange(0,0.8,0.02)))
-    #print(computeBER_mth('/data/add_disk0/shilinhu/CUHKshadow/test/mask_ADE', '/data/add_disk0/shilinhu/test_cuhk/ADE/l1_1/4000', mth=255*np.arange(0,0.8,0.02)))
-    #print(computeBER_mth('/data/add_disk0/shilinhu/CUHKshadow/test/mask_WEB', '/data/add_disk0/shilinhu/my_results/CUHK/l1_2/WEB', mth=255*np.arange(0,0.8,0.02)))
-    #print(computeBER_mth('/data/add_disk0/shilinhu/SBU/SBU-Test/ShadowMasks', '/data/add_disk0/shilinhu/test_small/l1_2/2500', mth=255*np.arange(0,0.8,0.02)))
+    #print(computeBER_mth('/nfs/bigcornea/add_disk0/shilinhu/ViSha/test/images/airplane', '/home/shilinhu/unet/results/flowcnn/test_latest_iter30000/airplane', mth=255*np.arange(0,0.8,0.02)))
+    #print(computeBER_mth('/data/add_disk0/shilinhu/CUHKshadow/test/mask_ADE', '/home/shilinhu/unet/results/adefsd/test_latest_iter50000', mth=255*np.arange(0,0.8,0.02)))
+    #print(computeBER_mth('/data/add_disk0/shilinhu/CUHKshadow/test/mask_ADE', '/home/shilinhu/Shadow/FSDNet/ckpt/FSDNet/prediction_iter_50000_net_FSD21/test/shadow_ADE', mth=255*np.arange(0,0.8,0.02)))
+    #print(computeBER_mth('/data/add_disk0/shilinhu/CUHKshadow/test/mask_USR', '/home/shilinhu/Shadow/FSDNet/ckpt/FSDNet/prediction_iter_50000_net_FSD21/test/shadow_USR', mth=255*np.arange(0,0.8,0.02)))
+    #print(computeBER_mth('/data/add_disk0/shilinhu/CUHKshadow/test/mask_WEB', '/home/shilinhu/Shadow/FSDNet/ckpt/FSDNet/prediction_iter_50000_net_FSD21/test/shadow_WEB', mth=255*np.arange(0,0.8,0.02)))
+    print(computeBER_mth('/data/add_disk0/shilinhu/SBU/SBU-Test/ShadowMasks', '/home/shilinhu/unet/results/esd/test_latest_iter50000', mth=255*np.arange(0,0.8,0.02)))
     #print(computeBER_mth('/data/add_disk0/shilinhu/SBU/SBU-Test/ShadowMasks', '/data/add_disk0/shilinhu/test_small/l1_2/3000', mth=255*np.arange(0,0.8,0.02)))
     #print(computeBER_mth('/data/add_disk0/shilinhu/SBU/SBU-Test/ShadowMasks', '/data/add_disk0/shilinhu/test_small/l1_2/3500', mth=255*np.arange(0,0.8,0.02)))
     #print(computeBER_mth('/data/add_disk0/shilinhu/SBU/SBU-Test/ShadowMasks', '/data/add_disk0/shilinhu/test_small/l1_2/4000', mth=255*np.arange(0,0.8,0.02)))

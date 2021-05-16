@@ -74,6 +74,11 @@ class BaseModel(ABC):
     def optimize_parameters(self):
         """Calculate losses, gradients, and update network weights; called in every training iteration"""
         pass
+    
+    @abstractmethod
+    def update_learning_rate(self, curr_iter):
+        """Update learning rates for all the networks; called at the end of every epoch"""
+        pass
 
     def setup(self, opt):
         """Load and print networks; create schedulers
@@ -112,26 +117,6 @@ class BaseModel(ABC):
     def get_image_paths(self):
         """ Return image paths that are used to load current data"""
         return self.image_paths
-
-    def update_learning_rate(self, curr_iter):
-        """Update learning rates for all the networks; called at the end of every epoch"""
-        if not self.opt.no_epoch:
-            old_lr = self.optimizers[0].param_groups[0]['lr']
-            for scheduler in self.schedulers:
-                if self.opt.lr_policy == 'plateau':
-                    scheduler.step(self.metric)
-                else:
-                    scheduler.step()
-
-            lr = self.optimizers[0].param_groups[0]['lr']
-            print('learning rate %.7f -> %.7f' % (old_lr, lr))
-        if self.opt.no_epoch:
-            old_lr = self.optimizers[0].param_groups[1]['lr']
-            self.optimizers[0].param_groups[0]['lr'] = 2 * self.opt.lr * (1 - float(curr_iter) / self.opt.iter_num) ** self.opt.lr_decay
-            self.optimizers[0].param_groups[1]['lr'] = self.opt.lr * (1 - float(curr_iter) / self.opt.iter_num) ** self.opt.lr_decay
-            lr = self.optimizers[0].param_groups[1]['lr']
-            if curr_iter % self.opt.print_freq == 0:
-                print('learning rate %.7f -> %.7f' % (old_lr, lr))
 
     def get_current_visuals(self):
         """Return visualization images. train.py will display these images with visdom, and save the images to a HTML"""
@@ -197,7 +182,7 @@ class BaseModel(ABC):
                 print('loading the model from %s' % load_path)
                 # if you are using PyTorch newer than 0.4 (e.g., built from
                 # GitHub source), you can remove str() on self.device
-                state_dict = torch.load(load_path, map_location=str(self.device))
+                state_dict = torch.load(load_path, map_location=self.device)
                 if hasattr(state_dict, '_metadata'):
                     del state_dict._metadata
 

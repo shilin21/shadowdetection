@@ -25,6 +25,46 @@ from options.train_options import TrainOptions
 from data import create_dataset
 from models import create_model
 from util.visualizer import Visualizer
+from torch.backends import cudnn
+
+cudnn.benchmark = True
+
+def train(opt, model, visualizer, dataset):
+    iter_data_time = time.time()
+    curr_iter = 0
+
+    while True:
+        visualizer.reset()
+        for i, data in enumerate(dataset):
+            iter_start_time = time.time()
+            if curr_iter % opt.print_freq == 0:
+                t_data = iter_start_time - iter_data_time
+
+            curr_iter += 1
+            model.set_input(data)
+            model.optimize_parameters()
+
+            if curr_iter % opt.display_freq == 0:
+                save_result = curr_iter % opt.update_html_freq == 0
+                model.compute_visuals()
+                visualizer.display_current_results(model.get_current_visuals(), curr_iter, save_result)
+
+            if curr_iter % opt.print_freq == 0:
+                losses = model.get_current_losses()
+                t_comp = (time.time() - iter_start_time) / opt.batch_size
+                visualizer.print_current_losses(0, curr_iter, losses, t_comp, t_data)
+                if opt.display_id > 0:
+                    visualizer.plot_current_losses(0, float(curr_iter) / dataset_size, losses)
+            if curr_iter % opt.save_latest_freq == 0:
+                print('saving the latest model (curr_iter %d)' % (curr_iter))
+                save_suffix = 'iter_%d' % curr_iter if opt.save_by_iter else 'latest'
+                model.save_networks(save_suffix)
+
+            iter_data_time = time.time()
+            model.update_learning_rate(curr_iter)
+            if curr_iter == opt.iter_num:
+                return
+
 
 if __name__ == '__main__':
     opt = TrainOptions().parse()   # get training options
@@ -79,37 +119,4 @@ if __name__ == '__main__':
 
             print('End of epoch %d / %d \t Time Taken: %d sec' % (epoch, opt.n_epochs + opt.n_epochs_decay, time.time() - epoch_start_time))
     else:
-        iter_data_time = time.time()
-        curr_iter = 0
-        
-        while True:
-            visualizer.reset()
-            for i, data in enumerate(dataset):
-                iter_start_time = time.time()
-                if curr_iter % opt.print_freq == 0:
-                    t_data = iter_start_time - iter_data_time
-                
-                curr_iter += 1
-                model.set_input(data)
-                model.optimize_parameters()
-                
-                if curr_iter % opt.display_freq == 0:
-                    save_result = curr_iter % opt.update_html_freq == 0
-                    model.compute_visuals()
-                    visualizer.display_current_results(model.get_current_visuals(), 0, save_result)
-                
-                if curr_iter % opt.print_freq == 0:
-                    losses = model.get_current_losses()
-                    t_comp = (time.time() - iter_start_time) / opt.batch_size
-                    visualizer.print_current_losses(0, curr_iter, losses, t_comp, t_data)
-                    if opt.display_id > 0:
-                        visualizer.plot_current_losses(0, float(curr_iter) / dataset_size, losses)
-                if curr_iter % opt.save_latest_freq == 0:
-                    print('saving the latest model (curr_iter %d)' % (curr_iter))
-                    save_suffix = 'iter_%d' % curr_iter if opt.save_by_iter else 'latest'
-                    model.save_networks(save_suffix)
-                
-                iter_data_time = time.time()
-                model.update_learning_rate(curr_iter)
-                if curr_iter == opt.iter_num:
-                    break
+        train(opt, model, visualizer, dataset)

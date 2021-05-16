@@ -16,6 +16,7 @@ You need to implement the following functions:
     <optimize_parameters>: Update network weights; it will be called in every training iteration.
 """
 import torch
+from torch.autograd import Variable
 from .base_model import BaseModel
 from . import networks
 
@@ -32,9 +33,9 @@ class FSDModel(BaseModel):
         Returns:
             the modified parser.
         """
-        parser.set_defaults(dataset_mode='aligned', output_nc=1, lr=5e-3, batch_size=6, n_epochs=1, n_epochs_decay=39, preprocess='resize', load_size=512, no_epoch=True, save_by_iter=True, load_iter=50000)
-        parser.add_argument('--weight_decay', type=float, default=5e-4, help='weight decay for bdrar sgd optimizer')
-        parser.add_argument('--momentum', type=float, default=0.9, help='momentum for bdrar sgd optimizer')
+        parser.set_defaults(dataset_mode='cuhk', lr=0.005, batch_size=6, preprocess='resize', load_size=512, no_epoch=True, save_by_iter=True, load_iter=50000, print_freq=1)
+        parser.add_argument('--weight_decay', type=float, default=5e-4, help='weight decay for sgd')
+        parser.add_argument('--momentum', type=float, default=0.9, help='momentum for sgd optimizer')
         parser.add_argument('--num_classes', type=int, default=1, help='number of classes')
         parser.add_argument('--backbone', type=str, default='mobilenet', help='backbone net type')
         parser.add_argument('--output_stride', type=int, default=16, help='number of output stride')
@@ -71,7 +72,7 @@ class FSDModel(BaseModel):
             # define and initialize optimizers. You can define one optimizer for each network.
             self.train_params = [{'params': self.netFSD.module.get_1x_lr_params(), 'lr': opt.lr},
                     {'params': self.netFSD.module.get_10x_lr_params(), 'lr': opt.lr * 10}]
-            self.optimizer = torch.optim.SGD(self.train_params, momentum=opt.momentum, weight_decay=opt.weight_decay)
+            self.optimizer = torch.optim.SGD(self.train_params, momentum=opt.momentum, weight_decay=opt.weight_decay, nesterov=False)
             self.optimizers = [self.optimizer]
 
         # Our program will automatically call <model.setup> to define schedulers, load networks, and print networks
@@ -82,10 +83,9 @@ class FSDModel(BaseModel):
         Parameters:
             input: a dictionary that contains the data itself and its metadata information.
         """
-        AtoB = self.opt.direction == 'AtoB'  # use <direction> to swap data_A and data_B
-        self.data_A = input['A' if AtoB else 'B'].to(self.device)  # get image data A
-        self.data_B = input['B' if AtoB else 'A'].to(self.device)  # get image data B
-        self.image_paths = input['A_paths' if AtoB else 'B_paths']  # get image paths
+        self.data_A = Variable(input['A']).to(self.device)  # get image data A
+        self.data_B = Variable(input['B']).to(self.device)  # get image data B
+        self.image_paths = input['A_paths']  # get image paths
 
     def forward(self):
         """Run forward pass. This will be called by both functions <optimize_parameters> and <test>."""
@@ -99,7 +99,26 @@ class FSDModel(BaseModel):
 
     def optimize_parameters(self):
         """Update network weights; it will be called in every training iteration."""
-        self.forward()               # first call forward to calculate intermediate results
         self.optimizer.zero_grad()   # clear network G's existing gradients
+        self.forward()               # first call forward to calculate intermediate results   
         self.backward()              # calculate gradients for network G
         self.optimizer.step()        # update gradients for network G
+        
+    def update_learning_rate(self, curr_iter):
+        """Update learning rates for all the networks; called at the end of every epoch"""
+        if not self.opt.no_epoch:
+            old_lr = self.optimizers[0].param_groups[0]['lr']
+            for scheduler in self.schedulers:
+                if self.opt.lr_policy == 'plateau':
+                    scheduler.step(self.metric)
+                else:
+                    scheduler.step()
+
+            lr = self.optimizers[0].param_groups[0]['lr']
+            print('learning rate %.7f -> %.7f' % (old_lr, lr))
+        if self.opt.no_epoch:
+            old_lr = self.optimizers[0].param_groups[1]['lr']
+            self.optimizers[0].param_groups[0]['lr'] = 1 * self.opt.lr * (1 - float(curr_iter) / self.opt.iter_num) ** self.opt.lr_decay
+            self.optimizers[0].param_groups[1]['lr'] = 10 * self.opt.lr * (1 - float(curr_iter) / self.opt.iter_num) ** self.opt.lr_decay
+            lr = self.optimizers[0].param_groups[1]['lr']
+            print('learning rate %.7f -> %.7f' % (old_lr, lr))

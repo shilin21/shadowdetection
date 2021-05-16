@@ -5,6 +5,7 @@ import ntpath
 import time
 from . import util, html
 from subprocess import Popen, PIPE
+from torchvision import transforms
 
 
 if sys.version_info[0] == 2:
@@ -33,10 +34,12 @@ def save_images(webpage, visuals, image_path, aspect_ratio=1.0, width=256, ori_h
     ims, txts, links = [], [], []
 
     for label, im_data in visuals.items():
-        im = util.tensor2im(im_data)
+        #im = util.tensor2im(im_data)
+        im = transforms.Resize((ori_h, ori_w))(transforms.ToPILImage()(im_data.data.squeeze(0).cpu()))
         image_name = '%s_%s.png' % (name, label)
         save_path = os.path.join(image_dir, image_name)
-        util.save_image(im, save_path, aspect_ratio=aspect_ratio, ori_h=ori_h, ori_w=ori_w)
+        #util.save_image(im, save_path, aspect_ratio=aspect_ratio, ori_h=ori_h, ori_w=ori_w)
+        im.save(save_path)
         ims.append(image_name)
         txts.append(label)
         links.append(image_name)
@@ -119,7 +122,10 @@ class Visualizer():
                 images = []
                 idx = 0
                 for label, image in visuals.items():
-                    image_numpy = util.tensor2im(image)
+                    if 'flow' in label:
+                        image_numpy = util.flow_to_image(image)
+                    else:
+                        image_numpy = util.tensor2im(image, normalize=self.opt.normalize)
                     label_html_row += '<td>%s</td>' % label
                     images.append(image_numpy.transpose([2, 0, 1]))
                     idx += 1
@@ -157,19 +163,25 @@ class Visualizer():
             self.saved = True
             # save images to the disk
             for label, image in visuals.items():
-                image_numpy = util.tensor2im(image)
-                img_path = os.path.join(self.img_dir, 'epoch%.3d_%s.png' % (epoch, label))
+                if 'flow' in label:
+                    image_numpy = util.flow_to_image(image)
+                else:
+                    image_numpy = util.tensor2im(image, normalize=self.opt.normalize)
+                if not self.opt.no_epoch:
+                    img_path = os.path.join(self.img_dir, 'epoch%.3d_%s.png' % (epoch, label))
+                else:
+                    img_path = os.path.join(self.img_dir, 'iter%.3d_%s.png' % (epoch, label))
                 util.save_image(image_numpy, img_path)
 
             # update website
             webpage = html.HTML(self.web_dir, 'Experiment name = %s' % self.name, refresh=1)
-            for n in range(epoch, 0, -1):
-                webpage.add_header('epoch [%d]' % n)
+            for n in range(epoch, epoch-1000, -100):
+                webpage.add_header('iter [%d]' % n)
                 ims, txts, links = [], [], []
 
-                for label, image_numpy in visuals.items():
-                    image_numpy = util.tensor2im(image)
-                    img_path = 'epoch%.3d_%s.png' % (n, label)
+                for label, image in visuals.items():
+                    image_numpy = util.tensor2im(image, normalize=self.opt.normalize)
+                    img_path = 'iter%.3d_%s.png' % (n, label)
                     ims.append(img_path)
                     txts.append(label)
                     links.append(img_path)
