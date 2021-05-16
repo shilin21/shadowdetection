@@ -1,5 +1,14 @@
 # coding: utf-8
-sbu_training_root = '/nfs/bigfovea/add_disk0/shilinhu/SBU/SBUTrain4KRecoveredSmall'
-sbu_testing_root = '/nfs/bigfovea/add_disk0/shilinhu/SBU/SBU-Test'
-cuhk_training_root = '/data/add_disk0/shilinhu/CUHKshadow/train'
-cuhk_testing_root = '/data/add_disk0/shilinhu/CUHKshadow/test'
+import os
+
+root_cuhkshadow = '/data/add_disk0/shilinhu/CUHKshadow'
+train_cuhkshadow_path = root_cuhkshadow
+# os.path.join(root_cuhkshadow, 'train')
+#train_raincityscapes_gt_path = os.path.join(root_raincityscapes, 'image')
+
+val_cuhkshadow_path = root_cuhkshadow
+# os.path.join(root_cuhkshadow, 'val')
+#root_raincityscapes
+#os.path.join(root_raincityscapes, 'test')
+#test_raincityscapes_gt_path = os.path.join(root_raincityscapes, 'image')
+

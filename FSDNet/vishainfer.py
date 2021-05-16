@@ -18,9 +18,9 @@ torch.manual_seed(2019)
 torch.cuda.set_device(0)
 
 ckpt_path = './ckpt'
-exp_name = 'FSDNet'
+exp_name = 'FSDNetvisha'
 args = {
-    'snapshot': 'iter_50000_net_FSD21',
+    'snapshot': '50000',
     'backbone': 'mobilenet',  # 'resnet', 'xception', 'drn', 'mobilenet'],
     'out_stride': 16,  # 8 or 16
     'sync_bn': None,  # whether to use sync bn (default: auto)
@@ -35,8 +35,9 @@ transform = transforms.Compose([
 
 to_pil = transforms.ToPILImage()
 
-to_test = {'CUHKshadow': '/nfs/bigcornea/add_disk0/shilinhu/CUHKshadow'}
+#to_test = {'CUHKshadow': '/nfs/bigcornea/add_disk0/shilinhu/CUHKshadow'}
 #to_test = {'small_shadow': '/nfs/bigcornea/add_disk0/shilinhu/small_shadow/train/sv277'}
+to_test = {'ViSha': '/nfs/bigcornea/add_disk0/shilinhu/ViSha'}
 
 
 def main():
@@ -56,14 +57,14 @@ def main():
     total_time = 0
     with torch.no_grad():
         for name, root in to_test.items():
-
-            img_txt = open(os.path.join(root, 'test.txt'))
+            
+            video_root = os.path.join(root, 'test')
+            video_list = [video for video in os.listdir(os.path.join(video_root, 'images')) if os.path.isdir(os.path.join(video_root, 'images', video))]
             img_name = []
-
-            for img_list in img_txt:
-                x = img_list.split()
-                img_name.append(x[0])
-            #img_name = [os.path.splitext(f)[0] for f in os.listdir(root) if f.endswith('.jpg')]
+            for v in video_list:
+                for img in os.listdir(os.path.join(video_root, 'images', v)):
+                    if img.endswith('.jpg'):
+                        img_name.append(os.path.join(video_root, 'images', v, img))
 
             for idx, image_name in enumerate(img_name):
                 

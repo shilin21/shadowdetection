@@ -14,18 +14,18 @@ from torchvision import transforms
 import joint_transforms
 from nets import FSDNet, basic, basic_DSC
 from config import train_cuhkshadow_path, val_cuhkshadow_path
-from dataset import ImageFolder
+from dataset import ImageFolder, ViShaFolder
 from misc import AvgMeter, check_mkdir
 from models.sync_batchnorm.replicate import patch_replication_callback
 from models.deeplab import *
 from KL_divergence import KL_divergence
 
-# torch.cuda.set_device(0)
+torch.cuda.set_device(5)
 
 cudnn.benchmark = True
 
 ckpt_path = './ckpt'
-exp_name = 'FSDNet'
+exp_name = 'FSDNetvisha'
 
 args = {
     'iter_num': 50000,
@@ -71,10 +71,11 @@ joint_transform_val = joint_transforms.Compose([
 ])
 
 
-train_set = ImageFolder(train_cuhkshadow_path, transform=transform, target_transform=transform, joint_transform=joint_transform, is_train=True, batch_size=args['train_batch_size'])
+visha_path = '/nfs/bigcornea/add_disk0/shilinhu/ViSha'
+train_set = ViShaFolder(visha_path, transform=transform, target_transform=transform, joint_transform=joint_transform, is_train=True, batch_size=args['train_batch_size'])
 train_loader = DataLoader(train_set, batch_size=args['train_batch_size'], num_workers=8, shuffle=True)
 
-test1_set = ImageFolder(val_cuhkshadow_path, transform=transform, target_transform=transform, joint_transform=joint_transform_val, is_train=False, batch_size=args['train_batch_size'])
+test1_set = ViShaFolder(visha_path, transform=transform, target_transform=transform, joint_transform=joint_transform_val, is_train=False, batch_size=args['train_batch_size'])
 test1_loader = DataLoader(test1_set, batch_size=args['train_batch_size'], num_workers=8)
 
 
